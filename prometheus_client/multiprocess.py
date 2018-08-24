@@ -37,7 +37,7 @@ class MultiProcessCollector(object):
                     metrics[metric_name] = metric
 
                 if typ == 'gauge':
-                    pid = parts[2][:-3]
+                    pid = parts[2]
                     metric._multiprocess_mode = parts[1]
                     metric.add_sample(name, tuple(zip(labelnames, labelvalues)) + (('pid', pid), ), value)
                 else:
@@ -98,7 +98,7 @@ def mark_process_dead(pid, path=None):
     """Do bookkeeping for when one process dies in a multi-process setup."""
     if path is None:
         path = os.environ.get('prometheus_multiproc_dir')
-    for f in glob.glob(os.path.join(path, 'gauge_livesum_{0}.db'.format(pid))):
+    for f in glob.glob(os.path.join(path, 'gauge_livesum_{0}_*.db'.format(pid))):
         os.remove(f)
-    for f in glob.glob(os.path.join(path, 'gauge_liveall_{0}.db'.format(pid))):
+    for f in glob.glob(os.path.join(path, 'gauge_liveall_{0}_*.db'.format(pid))):
         os.remove(f)

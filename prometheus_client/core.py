@@ -464,7 +464,7 @@ def _MultiProcessValue(_pidFunc=os.getpid):
             if file_prefix not in files:
                 filename = os.path.join(
                     os.environ['prometheus_multiproc_dir'],
-                    '{0}_{1}.db'.format(file_prefix, pid['value']))
+                    '{0}_{1}_{2}.db'.format(file_prefix, pid['value'], time.time()))
                 files[file_prefix] = _MmapedDict(filename)
             self._file = files[file_prefix]
             self._key = json.dumps((metric_name, name, labelnames, labelvalues))
