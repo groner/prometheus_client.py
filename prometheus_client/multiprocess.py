@@ -3,7 +3,8 @@
 from __future__ import unicode_literals
 
 from collections import defaultdict
-
+import errno
+import fcntl
 import glob
 import json
 import os
@@ -98,7 +99,15 @@ def mark_process_dead(pid, path=None):
     """Do bookkeeping for when one process dies in a multi-process setup."""
     if path is None:
         path = os.environ.get('prometheus_multiproc_dir')
-    for f in glob.glob(os.path.join(path, 'gauge_livesum_{0}_*.db'.format(pid))):
-        os.remove(f)
-    for f in glob.glob(os.path.join(path, 'gauge_liveall_{0}_*.db'.format(pid))):
+    for f in glob.glob(os.path.join(path, 'gauge_live*_{0}_*.db'.format(pid))):
+        with open(f, 'rb') as lfh:
+            try:
+                fcntl.flock(lfh.fileno(), fcntl.LOCK_EX|fcntl.LOCK_NB)
+            #except BlockingIOError:
+            except IOError as err:
+                if err.errno != errno.EWOULDBLOCK:
+                    raise
+                # The file is in use, we're either seeing pid reuse or perhaps
+                # the fd/lock was leaked.
+                continue
         os.remove(f)

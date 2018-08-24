@@ -3,6 +3,7 @@
 from __future__ import unicode_literals
 
 import copy
+import fcntl
 import json
 import math
 import mmap
@@ -355,6 +356,8 @@ class _MmapedDict(object):
     """
     def __init__(self, filename, read_mode=False):
         self._f = open(filename, 'a+b')
+        if not read_mode:
+            fcntl.flock(self._f.fileno(), fcntl.LOCK_EX)
         if os.fstat(self._f.fileno()).st_size == 0:
             self._f.truncate(_INITIAL_MMAP_SIZE)
         self._capacity = os.fstat(self._f.fileno()).st_size
