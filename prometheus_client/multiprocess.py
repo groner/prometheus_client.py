@@ -3,6 +3,7 @@
 from __future__ import unicode_literals
 
 from collections import defaultdict
+import contextlib
 import errno
 import fcntl
 import glob
@@ -25,26 +26,29 @@ class MultiProcessCollector(object):
 
     def collect(self):
         metrics = {}
-        for f in glob.glob(os.path.join(self._path, '*.db')):
-            parts = os.path.basename(f).split('_')
-            typ = parts[0]
-            d = core._MmapedDict(f, read_mode=True)
-            for key, value in d.read_all_values():
-                metric_name, name, labelnames, labelvalues = json.loads(key)
+        # Lock to avoid racing with a compacting operation.
+        with flocking(os.path.join(self._path, 'compacting'), fcntl.LOCK_SH):
+            for f in glob.glob(os.path.join(self._path, '*.db')):
+                parts = os.path.basename(f).split('_')
+                typ = parts[0]
 
-                metric = metrics.get(metric_name)
-                if metric is None:
-                    metric = core.Metric(metric_name, 'Multiprocess metric', typ)
-                    metrics[metric_name] = metric
+                d = core._MmapedDict(f, read_mode=True)
+                for key, value in d.read_all_values():
+                    metric_name, name, labelnames, labelvalues = json.loads(key)
 
-                if typ == 'gauge':
-                    pid = parts[2]
-                    metric._multiprocess_mode = parts[1]
-                    metric.add_sample(name, tuple(zip(labelnames, labelvalues)) + (('pid', pid), ), value)
-                else:
-                    # The duplicates and labels are fixed in the next for.
-                    metric.add_sample(name, tuple(zip(labelnames, labelvalues)), value)
-            d.close()
+                    metric = metrics.get(metric_name)
+                    if metric is None:
+                        metric = core.Metric(metric_name, 'Multiprocess metric', typ)
+                        metrics[metric_name] = metric
+
+                    if typ == 'gauge' and parts[2] != 'archived.db':
+                        pid = parts[2]
+                        metric._multiprocess_mode = parts[1]
+                        metric.add_sample(name, tuple(zip(labelnames, labelvalues)) + (('pid', pid), ), value)
+                    else:
+                        # The duplicates and labels are fixed in the next for.
+                        metric.add_sample(name, tuple(zip(labelnames, labelvalues)), value)
+                d.close()
 
         for metric in metrics.values():
             samples = defaultdict(float)
@@ -99,7 +103,7 @@ def mark_process_dead(pid, path=None):
     """Do bookkeeping for when one process dies in a multi-process setup."""
     if path is None:
         path = os.environ.get('prometheus_multiproc_dir')
-    for f in glob.glob(os.path.join(path, 'gauge_live*_{0}_*.db'.format(pid))):
+    for f in glob.glob(os.path.join(path, '*_{0}_*.db'.format(pid))):
         with open(f, 'rb') as lfh:
             try:
                 fcntl.flock(lfh.fileno(), fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -110,4 +114,58 @@ def mark_process_dead(pid, path=None):
                 # The file is in use, we're either seeing pid reuse or perhaps
                 # the fd/lock was leaked.
                 continue
-        os.remove(f)
+        fn = os.path.basename(f)
+        if fn.startswith('gauge_live'):
+            os.remove(f)
+        else:
+            compact(f)
+
+
+def compact(srcf):
+    path = os.environ.get('prometheus_multiproc_dir')
+
+    # Lock to avoid compacting while MultiProcessCollector is reading.
+    with flocking(os.path.join(path, 'compacting'), fcntl.LOCK_EX):
+        parts = os.path.basename(srcf).split('_')
+        typ = parts[0]
+        mm = parts[1] if typ == 'gauge' else None
+        pid = parts[2] if typ == 'gauge' else parts[1]
+
+        if mm:
+            dstf = os.path.join(path, '{0}_{1}_archived.db'.format(typ, mm))
+        else:
+            dstf = os.path.join(path, '{0}_archived.db'.format(typ))
+
+        src = core._MmapedDict(srcf, read_mode=True)
+        dst = core._MmapedDict(dstf)
+
+        for key, value in src.read_all_values():
+            if typ == 'gauge':
+                if mm == 'min':
+                    vnow = dst.read_value(key, init=False)
+                    if vnow is None or value < vnow:
+                        dst.write_value(key, value)
+
+                elif mm == 'max' and value > dst.read_value(key):
+                    vnow = dst.read_value(key, init=False)
+                    if vnow is None or value > vnow:
+                        dst.write_value(key, value)
+
+                elif mm == 'all':
+                    metric_name, name, labelnames, labelvalues = json.loads(key)
+                    key = json.dumps((metric_name, name, labelnames+['pid'], labelvalues+[pid]))
+                    dst.write_value(key, value)
+
+            else:
+                dst.write_value(key, dst.read_value(key)+value)
+
+        os.unlink(srcf)
+        dst.close()
+        src.close()
+
+
+@contextlib.contextmanager
+def flocking(fn, op):
+    with open(fn, 'ab+') as fh:
+        fcntl.flock(fh.fileno(), op)
+        yield

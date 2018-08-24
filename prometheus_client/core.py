@@ -416,8 +416,10 @@ class _MmapedDict(object):
         for k, v, _ in self._read_all_values():
             yield k, v
 
-    def read_value(self, key):
+    def read_value(self, key, init=True):
         if key not in self._positions:
+            if not init:
+                return
             self._init_value(key)
         pos = self._positions[key]
         # We assume that reading from an 8 byte aligned value is atomic
