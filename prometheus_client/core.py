@@ -357,7 +357,7 @@ class _MmapedDict(object):
     def __init__(self, filename, read_mode=False):
         self._f = open(filename, 'a+b')
         if not read_mode:
-            fcntl.flock(self._f.fileno(), fcntl.LOCK_EX)
+            fcntl.flock(self._f.fileno(), fcntl.LOCK_EX|fcntl.LOCK_NB)
         if os.fstat(self._f.fileno()).st_size == 0:
             self._f.truncate(_INITIAL_MMAP_SIZE)
         self._capacity = os.fstat(self._f.fileno()).st_size
